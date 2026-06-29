@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "description": "StockPulse Express API for Arabic RTL dropshipping stock intelligence.",
   "type": "module",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "dev": "node --watch server.js",
+    "start": "node server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
@@ -17,5 +17,8 @@
     "morgan": "^1.10.0",
     "zod": "^3.23.8"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -38,6 +38,6 @@ app.use((error, req, res, next) => {
   });
 });
 
-app.listen(config.port, () => {
-  console.log(`StockPulse API running on http://localhost:${config.port}`);
+app.listen(config.port, "0.0.0.0", () => {
+  console.log(`StockPulse API running on port ${config.port}`);
 });
