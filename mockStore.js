@@ -1,129 +1,163 @@
-const now = new Date();
-const hoursAgo = (hours) => new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString();
+import { randomUUID } from "node:crypto";
+import { classifyStockChange } from "./alerts.js";
 
-export const demoProducts = [
-  {
-    id: "prod-hoodie",
-    user_id: "demo-user",
-    platform: "taager.com",
-    product_id: "TA-2048",
-    product_name: "هودي شتوي مبطن",
-    image_url: "https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=240&q=80",
-    price: 520,
-    created_at: hoursAgo(72),
-    latest_quantity: 42,
-    previous_quantity: 68,
-    last_change: -26,
-    change_percent: -38.24,
-    last_snapshot_at: hoursAgo(2)
-  },
-  {
-    id: "prod-blender",
-    user_id: "demo-user",
-    platform: "safka-eg.com",
-    product_id: "SF-1830",
-    product_name: "خلاط محمول USB",
-    image_url: "https://images.unsplash.com/photo-1570222094114-d054a817e56b?auto=format&fit=crop&w=240&q=80",
-    price: 390,
-    created_at: hoursAgo(60),
-    latest_quantity: 130,
-    previous_quantity: 70,
-    last_change: 60,
-    change_percent: 85.71,
-    last_snapshot_at: hoursAgo(4)
-  },
-  {
-    id: "prod-bag",
-    user_id: "demo-user",
-    platform: "vendor-eg.com",
-    product_id: "VN-901",
-    product_name: "شنطة ظهر مقاومة للماء",
-    image_url: "https://images.unsplash.com/photo-1622560480605-d83c853bc5c3?auto=format&fit=crop&w=240&q=80",
-    price: 740,
-    created_at: hoursAgo(120),
-    latest_quantity: 0,
-    previous_quantity: 17,
-    last_change: -17,
-    change_percent: -100,
-    last_snapshot_at: hoursAgo(1)
+export const demoProducts = [];
+export const demoAlerts = [];
+export const demoPlatforms = [];
+
+function platformDisplayName(platform, suppliedName) {
+  if (suppliedName) return suppliedName;
+  if (platform.includes("safka")) return "Safka";
+  if (platform.includes("taager")) return "Taager";
+  if (platform.includes("vendor")) return "Vendor";
+  return platform.replace(/^https?:\/\//, "").split("/")[0];
+}
+
+export function ingestMemoryProducts(payload) {
+  const now = new Date().toISOString();
+  const createdAlerts = [];
+  let snapshotsSaved = 0;
+
+  let platformRow = demoPlatforms.find(
+    (item) => item.user_id === payload.user_id && item.url_pattern === payload.platform
+  );
+
+  if (!platformRow) {
+    platformRow = {
+      id: randomUUID(),
+      user_id: payload.user_id,
+      name: platformDisplayName(payload.platform, payload.products[0]?.platform_name),
+      url_pattern: payload.platform,
+      is_active: true,
+      last_sync_at: now,
+      created_at: now
+    };
+    demoPlatforms.push(platformRow);
+  } else {
+    platformRow.last_sync_at = now;
+    platformRow.is_active = true;
   }
-];
 
-export const demoAlerts = [
-  {
-    id: "alert-1",
-    user_id: "demo-user",
-    product_id: "prod-bag",
-    old_quantity: 17,
-    new_quantity: 0,
-    change_type: "out_of_stock",
-    change_percent: -100,
-    created_at: hoursAgo(1),
-    is_read: false,
-    products: demoProducts[2]
-  },
-  {
-    id: "alert-2",
-    user_id: "demo-user",
-    product_id: "prod-blender",
-    old_quantity: 70,
-    new_quantity: 130,
-    change_type: "spike",
-    change_percent: 85.71,
-    created_at: hoursAgo(4),
-    is_read: false,
-    products: demoProducts[1]
-  },
-  {
-    id: "alert-3",
-    user_id: "demo-user",
-    product_id: "prod-hoodie",
-    old_quantity: 68,
-    new_quantity: 42,
-    change_type: "drop",
-    change_percent: -38.24,
-    created_at: hoursAgo(2),
-    is_read: true,
-    products: demoProducts[0]
+  for (const product of payload.products) {
+    const timestamp = product.timestamp ? new Date(product.timestamp).toISOString() : now;
+    let row = demoProducts.find(
+      (item) =>
+        item.user_id === payload.user_id &&
+        item.platform === payload.platform &&
+        item.product_id === product.product_id
+    );
+
+    const oldQuantity = row?.latest_quantity ?? null;
+    const quantityChanged = oldQuantity === null || oldQuantity !== product.current_quantity;
+
+    if (!row) {
+      row = {
+        id: randomUUID(),
+        user_id: payload.user_id,
+        platform: payload.platform,
+        product_id: product.product_id,
+        product_name: product.product_name,
+        image_url: product.image_url || null,
+        price: product.price || 0,
+        created_at: timestamp,
+        latest_quantity: product.current_quantity,
+        previous_quantity: null,
+        last_change: product.current_quantity,
+        change_percent: 100,
+        last_snapshot_at: timestamp
+      };
+      demoProducts.push(row);
+    } else {
+      row.product_name = product.product_name || row.product_name;
+      row.image_url = product.image_url || row.image_url;
+      row.price = product.price ?? row.price;
+
+      if (quantityChanged) {
+        row.previous_quantity = oldQuantity;
+        row.latest_quantity = product.current_quantity;
+        row.last_change = product.current_quantity - oldQuantity;
+        row.last_snapshot_at = timestamp;
+      }
+    }
+
+    if (!quantityChanged) continue;
+    snapshotsSaved += 1;
+
+    const { changeType, changePercent } = classifyStockChange(oldQuantity, product.current_quantity);
+    row.change_percent = changePercent;
+
+    if (changeType) {
+      const alert = {
+        id: randomUUID(),
+        user_id: payload.user_id,
+        product_id: row.id,
+        old_quantity: oldQuantity,
+        new_quantity: product.current_quantity,
+        change_type: changeType,
+        change_percent: changePercent,
+        created_at: timestamp,
+        is_read: false,
+        products: row
+      };
+      demoAlerts.unshift(alert);
+      createdAlerts.push(alert);
+    }
   }
-];
 
-export const demoPlatforms = [
-  {
-    id: "platform-1",
-    user_id: "demo-user",
-    name: "Taager",
-    url_pattern: "taager.com",
+  return { snapshotsSaved, createdAlerts };
+}
+
+export function addMemoryPlatform(payload) {
+  const now = new Date().toISOString();
+  const existing = demoPlatforms.find(
+    (item) => item.user_id === payload.user_id && item.url_pattern === payload.url_pattern
+  );
+  if (existing) return existing;
+
+  const platform = {
+    id: randomUUID(),
+    ...payload,
     is_active: true,
-    last_sync_at: hoursAgo(2),
-    created_at: hoursAgo(100)
-  },
-  {
-    id: "platform-2",
-    user_id: "demo-user",
-    name: "Safka",
-    url_pattern: "safka-eg.com",
-    is_active: true,
-    last_sync_at: hoursAgo(4),
-    created_at: hoursAgo(100)
-  },
-  {
-    id: "platform-3",
-    user_id: "demo-user",
-    name: "Vendor EG",
-    url_pattern: "vendor-eg.com",
-    is_active: true,
-    last_sync_at: hoursAgo(1),
-    created_at: hoursAgo(100)
+    last_sync_at: null,
+    created_at: now
+  };
+  demoPlatforms.unshift(platform);
+  return platform;
+}
+
+export function updateMemoryPlatform(id, patch) {
+  const platform = demoPlatforms.find((item) => item.id === id);
+  if (!platform) return null;
+  Object.assign(platform, patch);
+  return platform;
+}
+
+export function markMemoryAlertRead(id) {
+  const alert = demoAlerts.find((item) => item.id === id);
+  if (!alert) return null;
+  alert.is_read = true;
+  return alert;
+}
+
+export function memoryStockSeries() {
+  const formatter = new Intl.DateTimeFormat("ar-EG", { weekday: "short" });
+  const days = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - offset);
+    const next = new Date(date);
+    next.setDate(next.getDate() + 1);
+    const alerts = demoAlerts.filter((item) => {
+      const at = new Date(item.created_at);
+      return at >= date && at < next;
+    });
+    days.push({
+      label: offset === 0 ? "اليوم" : formatter.format(date),
+      drops: alerts.filter((item) => item.change_type === "drop").length,
+      spikes: alerts.filter((item) => item.change_type === "spike").length,
+      out_of_stock: alerts.filter((item) => item.change_type === "out_of_stock").length
+    });
   }
-];
-
-export const demoStockSeries = [
-  { label: "السبت", drops: 4, spikes: 2, out_of_stock: 1 },
-  { label: "الأحد", drops: 7, spikes: 5, out_of_stock: 0 },
-  { label: "الاثنين", drops: 5, spikes: 8, out_of_stock: 2 },
-  { label: "الثلاثاء", drops: 10, spikes: 4, out_of_stock: 3 },
-  { label: "الأربعاء", drops: 6, spikes: 9, out_of_stock: 1 },
-  { label: "الخميس", drops: 8, spikes: 3, out_of_stock: 2 },
-  { label: "اليوم", drops: 3, spikes: 6, out_of_stock: 1 }
-];
+  return days;
+}

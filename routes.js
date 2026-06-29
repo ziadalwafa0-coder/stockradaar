@@ -3,7 +3,16 @@ import { z } from "zod";
 import { classifyStockChange } from "./alerts.js";
 import { config } from "./config.js";
 import { supabaseAdmin } from "./supabase.js";
-import { demoAlerts, demoPlatforms, demoProducts, demoStockSeries } from "./mockStore.js";
+import {
+  addMemoryPlatform,
+  demoAlerts,
+  demoPlatforms,
+  demoProducts,
+  ingestMemoryProducts,
+  markMemoryAlertRead,
+  memoryStockSeries,
+  updateMemoryPlatform
+} from "./mockStore.js";
 
 export const router = express.Router();
 
@@ -23,12 +32,6 @@ const ingestSchema = z.object({
   user_id: z.string().optional().default(config.defaultUserId)
 });
 
-function dbUnavailable(res) {
-  return res.status(202).json({
-    mode: "demo",
-    message: "Supabase غير مفعلة بعد. تمت إعادة استجابة تجريبية بدون حفظ دائم."
-  });
-}
 
 async function getLastSnapshot(productId) {
   const { data, error } = await supabaseAdmin
@@ -102,11 +105,13 @@ router.post("/scrape/ingest", async (req, res, next) => {
     const payload = ingestSchema.parse(req.body);
 
     if (!supabaseAdmin) {
-      return res.status(202).json({
-        mode: "demo",
+      const result = ingestMemoryProducts(payload);
+      return res.status(201).json({
+        mode: "memory",
         received: payload.products.length,
-        alerts_created: payload.products.length,
-        message: "تم استقبال البيانات بنجاح في الوضع التجريبي."
+        snapshots_saved: result.snapshotsSaved,
+        alerts_created: result.createdAlerts.length,
+        message: "تم حفظ المنتجات الحقيقية مؤقتًا وعرضها في الداشبورد. اربط Supabase للحفظ الدائم."
       });
     }
 
@@ -151,11 +156,16 @@ router.post("/scrape/ingest", async (req, res, next) => {
 
 router.get("/products", async (req, res, next) => {
   try {
-    if (!supabaseAdmin) {
-      return res.json({ data: demoProducts });
-    }
-
     const { platform, alert_only: alertOnly, search } = req.query;
+
+    if (!supabaseAdmin) {
+      let data = [...demoProducts];
+      if (platform) data = data.filter((item) => item.platform === platform);
+      if (search) data = data.filter((item) => item.product_name.toLowerCase().includes(String(search).toLowerCase()));
+      if (alertOnly === "true") data = data.filter((item) => Number(item.last_change || 0) !== 0);
+      data.sort((a, b) => new Date(b.last_snapshot_at) - new Date(a.last_snapshot_at));
+      return res.json({ data });
+    }
     let query = supabaseAdmin
       .from("product_latest_stock")
       .select("*")
@@ -201,7 +211,9 @@ router.get("/alerts", async (req, res, next) => {
 router.patch("/alerts/:id/read", async (req, res, next) => {
   try {
     if (!supabaseAdmin) {
-      return res.json({ data: { id: req.params.id, is_read: true } });
+      const alert = markMemoryAlertRead(req.params.id);
+      if (!alert) return res.status(404).json({ error: "التنبيه غير موجود" });
+      return res.json({ data: alert });
     }
 
     const { data, error } = await supabaseAdmin
@@ -221,14 +233,20 @@ router.patch("/alerts/:id/read", async (req, res, next) => {
 router.get("/dashboard/stats", async (req, res, next) => {
   try {
     if (!supabaseAdmin) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const topMovers = [...demoProducts]
+        .sort((a, b) => Math.abs(b.change_percent || 0) - Math.abs(a.change_percent || 0))
+        .slice(0, 8);
+
       return res.json({
         data: {
           total_products: demoProducts.length,
-          total_alerts_today: demoAlerts.length,
+          total_alerts_today: demoAlerts.filter((alert) => new Date(alert.created_at) >= startOfToday).length,
           platforms_active: demoPlatforms.filter((platform) => platform.is_active).length,
-          biggest_move: 85.71,
-          top_movers: demoProducts.sort((a, b) => Math.abs(b.change_percent) - Math.abs(a.change_percent)),
-          stock_series: demoStockSeries
+          biggest_move: topMovers[0]?.change_percent || 0,
+          top_movers: topMovers,
+          stock_series: memoryStockSeries()
         }
       });
     }
@@ -260,7 +278,7 @@ router.get("/dashboard/stats", async (req, res, next) => {
         platforms_active: platformsActive || 0,
         biggest_move: topMovers[0]?.change_percent || 0,
         top_movers: topMovers,
-        stock_series: demoStockSeries
+        stock_series: memoryStockSeries()
       }
     });
   } catch (error) {
@@ -296,7 +314,8 @@ router.post("/platforms", async (req, res, next) => {
     const payload = schema.parse(req.body);
 
     if (!supabaseAdmin) {
-      return dbUnavailable(res);
+      const data = addMemoryPlatform(payload);
+      return res.status(201).json({ data, mode: "memory" });
     }
 
     const { data, error } = await supabaseAdmin
@@ -315,7 +334,9 @@ router.post("/platforms", async (req, res, next) => {
 router.patch("/platforms/:id", async (req, res, next) => {
   try {
     if (!supabaseAdmin) {
-      return res.json({ data: { id: req.params.id, ...req.body } });
+      const data = updateMemoryPlatform(req.params.id, req.body);
+      if (!data) return res.status(404).json({ error: "المنصة غير موجودة" });
+      return res.json({ data, mode: "memory" });
     }
 
     const { data, error } = await supabaseAdmin

@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -6,16 +8,27 @@ import { config } from "./config.js";
 import { router } from "./routes.js";
 
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const publicDir = path.join(__dirname, "public");
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: false
+  })
+);
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || origin === config.frontendUrl || origin.startsWith("chrome-extension://")) {
+      if (
+        !origin ||
+        origin === config.frontendUrl ||
+        origin.startsWith("chrome-extension://") ||
+        origin.endsWith(".up.railway.app")
+      ) {
         callback(null, true);
         return;
       }
-
       callback(new Error("Not allowed by CORS"));
     },
     credentials: true
@@ -25,9 +38,13 @@ app.use(express.json({ limit: "2mb" }));
 app.use(morgan("dev"));
 
 app.use("/api", router);
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "مسار API غير موجود" });
+});
 
-app.use((req, res) => {
-  res.status(404).json({ error: "المسار غير موجود" });
+app.use(express.static(publicDir));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.use((error, req, res, next) => {
@@ -39,5 +56,5 @@ app.use((error, req, res, next) => {
 });
 
 app.listen(config.port, "0.0.0.0", () => {
-  console.log(`StockPulse API running on port ${config.port}`);
+  console.log(`StockPulse dashboard and API running on port ${config.port}`);
 });
